@@ -15,6 +15,7 @@ using Poco::Net::HTTPRequest;
 using Poco::Net::HTTPResponse;
 using Poco::Net::HTTPMessage;
 using Poco::Net::ICMPSocketImpl;
+using Poco::Net::StreamSocket;
 using Poco::Net::IPAddress;
 
 void Networking::m_ping(const std::function<void(void)>* _callback) {
@@ -45,24 +46,69 @@ void Networking::invoke_ping(const std::function<void(void)>* _callback) {
 }
 
 void Networking::m_query_global_ip(const std::function<void(void)>* _callback) {
-    auto dest_addr = m_resolve(g_global_ip_id_domain_name);
     URI uri{"http://" + g_global_ip_id_domain_name};
-    auto session_sock = m_httpsock_factory->create();
-    HTTPClientSession session {uri.getHost(), uri.getPort()};
+    HTTPClientSession session {};
+    session.setSourceAddress({m_host, 0});
+    session.setHost(uri.getHost());
+    session.setPort(uri.getPort());
     std::string path {uri.getPathAndQuery()};
     if (path.empty()) path = "/";
     HTTPRequest req(HTTPRequest::HTTP_GET, path, HTTPMessage::HTTP_1_1);
     session.sendRequest(req);
     HTTPResponse res {};
     auto& ifs = session.receiveResponse(res);
-    std::string res_ip {};
-    ifs >> res_ip;
-    PLOG(plog::info) << "Received global IP " << res_ip;
+    // Response is a single IPv4 address.
+    ifs >> m_global_host;
+    PLOG(plog::info) << "Received global IP " << m_global_host;
 
+    if (!_callback) return;
+    (*_callback)();
 }
 
 void Networking::query_global_ip(const std::function<void(void)>* _callback) {
     std::thread _query_job {&Networking::m_query_global_ip, this, _callback};
+    _query_job.join();
+}
+
+void Networking::m_query_geolocation(const std::function<void(void)>* _callback) {
+    if (!m_global_host.size())
+        throw net::InvalidState{};
+    GeolocationQuery query{m_global_host};
+    PLOG(plog::info) << "Sending query for geolocation: " << query.query();
+
+    URI uri {query.query()};
+    HTTPClientSession session {};
+    session.setSourceAddress({m_host, 0});
+    session.setHost(uri.getHost());
+    session.setPort(uri.getPort());
+    std::string path {uri.getPathAndQuery()};
+    if (path.empty()) path = "/";
+    HTTPRequest req(HTTPRequest::HTTP_GET, path, HTTPMessage::HTTP_1_1);
+    session.sendRequest(req);
+    HTTPResponse res {};
+    auto& ifs = session.receiveResponse(res);
+
+    m_geolocation.clear();
+    std::string next {};
+    ifs >> next;
+    if (next != "success")
+        throw net::NetException{"geolocation API returned failed"};
+    ifs >> next;
+    m_geolocation += next;
+    if (!ifs) return;
+    ifs >> next;
+    m_geolocation += ", " + next;
+    if (!ifs) return;
+    ifs >> next;
+    m_geolocation += ", " + next;
+
+    PLOG(plog::info) << "Received geolocation: " << m_geolocation;
+    if (!_callback) return;
+    (*_callback)();
+}
+
+void Networking::query_geolocation(const std::function<void(void)>* _callback) {
+    std::thread _query_job {&Networking::m_query_geolocation, this, _callback};
     _query_job.join();
 }
 
@@ -129,9 +175,6 @@ Networking::Networking() {
             }
         }
     }
-
-    m_icmpsock_factory = std::make_unique<ICMPSocketFactory>(m_host);
-    m_httpsock_factory = std::make_unique<HTTPSocketFactory>(m_host);
 
     freeifaddrs(m_ints);
 }

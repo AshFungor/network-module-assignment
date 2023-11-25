@@ -52,4 +52,13 @@ namespace net {
         {}
     };
 
+    class InvalidState : public NetException {
+        static constexpr std::string_view c_nofmt_str =
+                         "state of singleton is invalid (was queries invoked in correct order?)";
+    public:
+        InvalidState()
+            : NetException{c_nofmt_str.data()}
+        {}
+    };
+
 }

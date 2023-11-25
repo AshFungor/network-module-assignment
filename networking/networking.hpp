@@ -46,40 +46,20 @@ namespace net {
         IntDown, Eather, Wireless, ServerDown
     };
 
-    class BaseSocketFactory {
-        // Port pool
-    protected:
-        constexpr static int c_low = 2000;
-        constexpr static int c_high = 6000;
+    class GeolocationQuery {
+        constexpr static std::string c_service {"ip-api.com"};
+        constexpr static std::string c_datatype {"line"};
+        constexpr static std::string c_fields {"573457"};
+        constexpr static std::string_view c_query {"http://{0}/{1}/{2}?fields={3}"};
+
+        std::string m_query {};
     public:
-        BaseSocketFactory() = default;
-        virtual std::unique_ptr<Poco::Net::Socket> create() = 0;
-    };
+        GeolocationQuery(const std::string& _ip) {
+            m_query = std::vformat(c_query,
+                std::make_format_args(c_service, c_datatype, _ip, c_fields));
+        }
 
-    class ICMPSocketFactory : public BaseSocketFactory {
-        // Configuration.
-        constexpr static std::uint16_t c_port = 2000;
-        constexpr static std::uint16_t c_pkgsize = 48;
-        constexpr static std::uint16_t c_ttl = 128;
-        constexpr static std::uint32_t c_timeout = 5000000;
-
-        Poco::Net::SocketAddress m_sock_addr {};
-    public:
-        ICMPSocketFactory(std::string _local_addr, std::uint16_t _port = c_port)
-        : BaseSocketFactory{}, m_sock_addr {_local_addr, _port} {}
-        virtual std::unique_ptr<Poco::Net::Socket> create() final;
-    };
-
-    class HTTPSocketFactory : public BaseSocketFactory {
-        // Configuration.
-        constexpr static std::uint16_t c_port = 2000;
-
-        Poco::Net::SocketAddress m_sock_addr {};
-    public:
-        HTTPSocketFactory(std::string _local_addr, std::uint16_t _port = c_port)
-        : BaseSocketFactory{}, m_sock_addr {_local_addr, _port} {}
-        virtual std::unique_ptr<Poco::Net::Socket> create() final;
-
+        std::string query() const { return m_query; }
     };
 
     class Networking {
@@ -91,11 +71,12 @@ namespace net {
         static std::unique_ptr<Networking> __instance;
         std::atomic<NetState> m_state {};
         std::string m_host {};
-        std::unique_ptr<ICMPSocketFactory> m_icmpsock_factory {};
-        std::unique_ptr<HTTPSocketFactory> m_httpsock_factory {};
+        std::string m_global_host {};
+        std::string m_geolocation {};
 
         void m_ping(const std::function<void(void)>* _callback);
         void m_query_global_ip(const std::function<void(void)>* _callback);
+        void m_query_geolocation(const std::function<void(void)>* _callback);
 
         Poco::Net::IPAddress m_resolve(const std::string& _domain_name);
 
@@ -103,7 +84,11 @@ namespace net {
     public:
         void invoke_ping(const std::function<void(void)>* _callback = nullptr);
         void query_global_ip(const std::function<void(void)>* _callback = nullptr);
+        void query_geolocation(const std::function<void(void)>* _callback = nullptr);
         NetState get_state() { return m_state; }
+        std::string get_addr() { return m_host; }
+        std::string get_global_addr() { return m_global_host; }
+        std::string get_geolocation() { return m_geolocation; }
 
         // Singleton
         Networking(const Networking&) = delete;

@@ -31,7 +31,7 @@
 #include <Poco/Net/HTTPResponse.h>
 #include <Poco/Net/StreamSocket.h>
 #include <Poco/Net/StreamSocketImpl.h>
-#include "Poco/ThreadPool.h"
+#include <Poco/ThreadPool.h>
 
 // Logging
 #include <plog/Log.h>
@@ -68,6 +68,26 @@ namespace net {
 
     using callback_func_t = const std::function<void(void)>*;
 
+    class CallbackBridge {
+        callback_func_t m_callback_func;
+        bool* m_lock_ptr;
+    public:
+        CallbackBridge(callback_func_t _callback, bool* _lock)
+        : m_callback_func{_callback}, m_lock_ptr{_lock}
+        {}
+        void operator()() {
+            *m_lock_ptr = false;
+            if (m_callback_func) (*m_callback_func)();
+        }
+    };
+
+    namespace tasks {
+        class NetTask;
+        class PingTask;
+        class QueryGlobalIPTask;
+        class QueryGeolocationTask;
+    }
+
     class Networking {
         using netcall_mapped_t = void (Networking::* const) (callback_func_t);
         // Configuration
@@ -88,9 +108,14 @@ namespace net {
         bool m_query_global_ip_lock {false};
         bool m_query_geolocation_lock {false};
 
-        void m_ping(callback_func_t _callback);
-        void m_query_global_ip(callback_func_t _callback);
-        void m_query_geolocation(callback_func_t _callback);
+        // Threads
+        std::unique_ptr<tasks::PingTask> m_ping_runnable {};
+        std::unique_ptr<tasks::QueryGlobalIPTask> m_query_glip_runnable {};
+        std::unique_ptr<tasks::QueryGeolocationTask> m_query_location_runnable {};
+
+        void m_ping(CallbackBridge _callback);
+        void m_query_global_ip(CallbackBridge _callback);
+        void m_query_geolocation(CallbackBridge _callback);
 
         Poco::Net::IPAddress m_resolve(const std::string& _domain_name);
 
@@ -113,6 +138,9 @@ namespace net {
             return *__instance;
         }
 
+        friend tasks::PingTask;
+        friend tasks::QueryGlobalIPTask;
+        friend tasks::QueryGeolocationTask;
     };
 
     namespace tasks {
@@ -120,38 +148,38 @@ namespace net {
         class NetTask : public Poco::Runnable {
         protected:
             Networking* m_master_ptr;
-            callback_func_t m_callback_func;
+            CallbackBridge m_callback;
         public:
-            NetTask(Networking& _module, callback_func_t _callback)
-            : m_master_ptr{&_module}, m_callback_func{_callback}
+            NetTask(Networking* _module, CallbackBridge _callback)
+            : m_master_ptr{_module}, m_callback{_callback}
             {}
             NetTask() = delete;
         };
 
         class PingTask : public NetTask {
         public:
-            PingTask(Networking& _module, callback_func_t _callback)
+            PingTask(Networking* _module, CallbackBridge _callback)
             : NetTask{_module, _callback} {}
             virtual void run() final {
-                m_master_ptr->invoke_ping(m_callback_func);
+                m_master_ptr->m_ping(m_callback);
             }
         };
 
         class QueryGlobalIPTask : public NetTask {
         public:
-            QueryGlobalIPTask(Networking& _module, callback_func_t _callback)
+            QueryGlobalIPTask(Networking* _module, CallbackBridge _callback)
             : NetTask{_module, _callback} {}
             virtual void run() final {
-                m_master_ptr->query_global_ip(m_callback_func);
+                m_master_ptr->m_query_global_ip(m_callback);
             }
         };
 
         class QueryGeolocationTask : public NetTask {
         public:
-            QueryGeolocationTask(Networking& _module, callback_func_t _callback)
+            QueryGeolocationTask(Networking* _module, CallbackBridge _callback)
             : NetTask{_module, _callback} {}
             virtual void run() final {
-                m_master_ptr->query_geolocation(m_callback_func);
+                m_master_ptr->m_query_geolocation(m_callback);
             }
         };
     }

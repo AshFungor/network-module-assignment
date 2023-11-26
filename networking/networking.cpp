@@ -18,18 +18,18 @@ using Poco::Net::ICMPSocketImpl;
 using Poco::Net::StreamSocket;
 using Poco::Net::IPAddress;
 
-void Networking::m_ping(const std::function<void(void)>* _callback) {
+void Networking::m_ping(CallbackBridge _callback) {
     Poco::Net::IPAddress server;
     try {
         server = m_resolve(g_laar_service);
     } catch (const Poco::Net::DNSException& _ex) {
         PLOG(plog::error) << "Ping to Laar server failed, host not found";
         m_state = NetState::ServerDown;
-        if (_callback) (*_callback)();
+        _callback();
     } catch (const net::NoValidIPFoundException& _ex) {
         PLOG(plog::error) << "No valid IP address for pinging";
         m_state = NetState::ServerDown;
-        if (_callback) (*_callback)();
+        _callback();
     }
 
     ICMPClient client {SocketAddress::Family::IPv4};
@@ -40,7 +40,7 @@ void Networking::m_ping(const std::function<void(void)>* _callback) {
         m_state = NetState::ServerDown;
     }
     // Callback
-    if (_callback) (*_callback)();
+    _callback();
 }
 
 IPAddress Networking::m_resolve(const std::string& _domain_name) {
@@ -70,24 +70,22 @@ void Networking::invoke_ping(const std::function<void(void)>* _callback) {
         PLOG(plog::error) << "Ping is already running";
         throw net::LockViolation{};
     }
+    m_ping_lock = true;
 
-    if (!Poco::ThreadPool::defaultPool().available()) {
-        Poco::ThreadPool::defaultPool().collect();
-    }
-
-    net::tasks::PingTask task {*this, _callback};
-    Poco::ThreadPool::defaultPool().start(task);
+    net::CallbackBridge bridge {_callback, &m_ping_lock};
+    m_ping_runnable = std::make_unique<tasks::PingTask>(this, bridge);
+    Poco::Thread thread {};
+    thread.start(*m_ping_runnable);
+    thread.join();
 }
 
-void Networking::m_query_global_ip(const std::function<void(void)>* _callback) {
+void Networking::m_query_global_ip(CallbackBridge _callback) {
     URI uri{"http://" + g_glip_id_service};
     HTTPClientSession session {};
     session.setSourceAddress({m_host, 0});
     session.setHost(uri.getHost());
     session.setPort(uri.getPort());
-    std::string path {uri.getPathAndQuery()};
-    if (path.empty()) path = "/";
-    HTTPRequest req(HTTPRequest::HTTP_GET, path, HTTPMessage::HTTP_1_1);
+    HTTPRequest req(HTTPRequest::HTTP_GET, "/", HTTPMessage::HTTP_1_1);
     session.sendRequest(req);
     HTTPResponse res {};
     auto& ifs = session.receiveResponse(res);
@@ -95,20 +93,30 @@ void Networking::m_query_global_ip(const std::function<void(void)>* _callback) {
     ifs >> m_global_host;
     PLOG(plog::info) << "Received global IP " << m_global_host;
 
-    if (!_callback) return;
-    (*_callback)();
+    _callback();
 }
 
 void Networking::query_global_ip(const std::function<void(void)>* _callback) {
-    std::thread _query_job {&Networking::m_query_global_ip, this, _callback};
-    _query_job.join();
+    if (m_query_global_ip_lock) {
+        PLOG(plog::error) << "Query for global IP is already running";
+        throw net::LockViolation{};
+    }
+    m_query_global_ip_lock = true;
+
+    net::CallbackBridge bridge {_callback, &m_query_global_ip_lock};
+    m_query_glip_runnable = std::make_unique<tasks::QueryGlobalIPTask>(this, bridge);
+    Poco::Thread thread {};
+    thread.start(*m_query_glip_runnable);
+    thread.join();
 }
 
-void Networking::m_query_geolocation(const std::function<void(void)>* _callback) {
-    if (!m_global_host.size())
+void Networking::m_query_geolocation(CallbackBridge _callback) {
+    if (!m_global_host.size()) {
+        PLOG(plog::error) << "Host global IP must be acquired first";
         throw net::InvalidState{};
+    }
     GeolocationQuery query{m_global_host};
-    PLOG(plog::info) << "Sending query for geolocation: " << query.query();
+    PLOG(plog::verbose) << "Sending query for geolocation: " << query.query();
 
     URI uri {query.query()};
     HTTPClientSession session {};
@@ -116,7 +124,6 @@ void Networking::m_query_geolocation(const std::function<void(void)>* _callback)
     session.setHost(uri.getHost());
     session.setPort(uri.getPort());
     std::string path {uri.getPathAndQuery()};
-    if (path.empty()) path = "/";
     HTTPRequest req(HTTPRequest::HTTP_GET, path, HTTPMessage::HTTP_1_1);
     session.sendRequest(req);
     HTTPResponse res {};
@@ -125,38 +132,65 @@ void Networking::m_query_geolocation(const std::function<void(void)>* _callback)
     m_geolocation.clear();
     std::string next {};
     ifs >> next;
-    if (next != "success")
+    if (next != "success") {
+        PLOG(plog::error) << "API response was: " << next
+                          << ", expected: success";
         throw net::NetException{"geolocation API returned failed"};
+    }
+    // Country
+    if (!ifs) {
+        m_geolocation = "Nowhere";
+        PLOG(plog::warning) << "Response for location missing country, city and district";
+        goto callback;
+    }
     ifs >> next;
     m_geolocation += next;
-    if (!ifs) return;
+    if (!ifs) {
+        PLOG(plog::warning) << "Response for location missing city and district";
+        goto callback;
+    }
     ifs >> next;
     m_geolocation += ", " + next;
-    if (!ifs) return;
+    if (!ifs) {
+        PLOG(plog::warning) << "Response for location missing district";
+        goto callback;
+    }
     ifs >> next;
     m_geolocation += ", " + next;
 
     PLOG(plog::info) << "Received geolocation: " << m_geolocation;
-    if (!_callback) return;
-    (*_callback)();
+
+    callback:
+    _callback();
 }
 
 void Networking::query_geolocation(const std::function<void(void)>* _callback) {
-    std::thread _query_job {&Networking::m_query_geolocation, this, _callback};
-    _query_job.join();
+    if (m_query_geolocation_lock) {
+        PLOG(plog::error) << "Query for Geolocation is already running";
+        throw net::LockViolation{};
+    }
+    m_query_geolocation_lock = true;
+
+    net::CallbackBridge bridge {_callback, &m_query_geolocation_lock};
+    m_query_location_runnable = std::make_unique<tasks::QueryGeolocationTask>(this, bridge);
+    Poco::Thread thread {};
+    thread.start(*m_query_location_runnable);
+    thread.join();
 }
 
 Networking::Networking() {
     // Log initialization.
-    plog::init(plog::info, "log.txt", c_mlogfsize, c_mlogfnum);
+    plog::init(plog::verbose, "log.txt", c_mlogfsize, c_mlogfnum);
     // Get linked-list with hardware network interfaces.
     ifaddrs* m_ints;
     auto result = getifaddrs(&m_ints);
     if (result) {
+        PLOG(plog::error) << "Acquiring network interfaces failed: "
+                          << errno << " errno";
         throw net::SystemException(errno);
     }
 
-    PLOG(plog::info) << "Parsing through hardware network interfaces";
+    PLOG(plog::verbose) << "Parsing through hardware network interfaces";
     std::vector<std::pair<std::string, std::string>> active_ints;
     std::string host {};
     host.resize(NI_MAXHOST);
@@ -164,14 +198,10 @@ Networking::Networking() {
     for (auto curr = m_ints; curr; curr = curr->ifa_next) {
         auto family = curr->ifa_addr->sa_family;
         if (AF_INET == family) {
-            auto res = getnameinfo(curr->ifa_addr,
-                                   sizeof(sockaddr_in),
-                                   host.data(),
-                                   NI_MAXHOST,
-                                   nullptr,
-                                   0,
-                                   NI_NUMERICHOST);
+            auto res = getnameinfo(curr->ifa_addr, sizeof(sockaddr_in), host.data(),
+                                   NI_MAXHOST, nullptr, 0, NI_NUMERICHOST);
             if (res) {
+                PLOG(plog::error) << "Socket error: " << errno << " errno";
                 throw net::SocketException{res};
             }
         }

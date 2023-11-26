@@ -21,5 +21,6 @@ target_link_libraries(network-module PRIVATE Poco::Net
 
 add_executable(test main.cpp)
 target_link_libraries(test PRIVATE network-module)
+target_link_libraries(test PRIVATE Poco::Foundation)
 target_include_directories(test PRIVATE ${NETWORKING_DIR})
 

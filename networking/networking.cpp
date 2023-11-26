@@ -19,34 +19,68 @@ using Poco::Net::StreamSocket;
 using Poco::Net::IPAddress;
 
 void Networking::m_ping(const std::function<void(void)>* _callback) {
-    auto dest_addr = m_resolve(g_laar_domain_name).toString();
+    Poco::Net::IPAddress server;
+    try {
+        server = m_resolve(g_laar_service);
+    } catch (const Poco::Net::DNSException& _ex) {
+        PLOG(plog::error) << "Ping to Laar server failed, host not found";
+        m_state = NetState::ServerDown;
+        if (_callback) (*_callback)();
+    } catch (const net::NoValidIPFoundException& _ex) {
+        PLOG(plog::error) << "No valid IP address for pinging";
+        m_state = NetState::ServerDown;
+        if (_callback) (*_callback)();
+    }
+
     ICMPClient client {SocketAddress::Family::IPv4};
-    auto replies = client.pingIPv4(dest_addr);
-    PLOG(plog::info) << "Ping result is " << (replies > 0);
-    if (!replies) m_state = NetState::ServerDown;
+    auto replies = client.ping(server.toString());
+    PLOG(plog::info) << "Replies for ping received: " << replies;
+    if (!replies) {
+        PLOG(plog::warning) << "No response from Laar server";
+        m_state = NetState::ServerDown;
+    }
     // Callback
-    if (!_callback) return;
-    (*_callback)();
+    if (_callback) (*_callback)();
 }
 
 IPAddress Networking::m_resolve(const std::string& _domain_name) {
-    auto entries = DNS::hostByName(_domain_name.data());
-    PLOG(plog::info) << "Getting entries for " << _domain_name;
+    Poco::Net::HostEntry entries;
+    try {
+        entries = DNS::hostByName(_domain_name.data());
+    } catch (const Poco::Net::DNSException& _ex) {
+        PLOG(plog::error) << "Host resolution failed for host: "
+                          << _domain_name;
+        _ex.rethrow();
+    }
+
+    PLOG(plog::verbose) << "IP addresses acquired for " << _domain_name;
+
     auto addrs = entries.addresses();
     auto valid = std::find_if(addrs.begin(), addrs.end(),
-        [](IPAddress& addr) { return addr.family() == SocketAddress::IPv4; });
-    if (valid == addrs.end()) throw net::DNSException{};
-    PLOG(plog::info) << "Address resolved: " << valid->toString();
+        [](const IPAddress& addr) { return addr.family() == SocketAddress::IPv4; });
+
+    if (valid == addrs.end())
+        throw net::NoValidIPFoundException{_domain_name};
+    PLOG(plog::verbose) << "Address chosen: " << valid->toString();
     return *valid;
 }
 
 void Networking::invoke_ping(const std::function<void(void)>* _callback) {
-    std::thread _ping_job {&Networking::m_ping, this, _callback};
-    _ping_job.join();
+    if (m_ping_lock) {
+        PLOG(plog::error) << "Ping is already running";
+        throw net::LockViolation{};
+    }
+
+    if (!Poco::ThreadPool::defaultPool().available()) {
+        Poco::ThreadPool::defaultPool().collect();
+    }
+
+    net::tasks::PingTask task {*this, _callback};
+    Poco::ThreadPool::defaultPool().start(task);
 }
 
 void Networking::m_query_global_ip(const std::function<void(void)>* _callback) {
-    URI uri{"http://" + g_global_ip_id_domain_name};
+    URI uri{"http://" + g_glip_id_service};
     HTTPClientSession session {};
     session.setSourceAddress({m_host, 0});
     session.setHost(uri.getHost());

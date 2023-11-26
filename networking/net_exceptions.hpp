@@ -25,38 +25,45 @@ namespace net {
 
     class SystemException : public NetException {
         static constexpr std::string_view c_fmt_str =
-                         "system call returned {} errno";
+                         "System call returned {} errno";
     public:
         SystemException(int _error)
-            : NetException{std::vformat(c_fmt_str,
-                      std::make_format_args(_error))}
+            : NetException{std::format(c_fmt_str, _error)}
         {}
     };
 
     class SocketException : public NetException {
         static constexpr std::string_view c_fmt_str =
-                         "socket returned error {}";
+                         "Socket returned error {}";
     public:
         SocketException(int _error)
-            : NetException{std::vformat(c_fmt_str,
-                      std::make_format_args(gai_strerror(_error)))}
+            : NetException{std::format(c_fmt_str, _error)}
         {}
     };
 
-    class DNSException : public NetException {
-        static constexpr std::string_view c_nofmt_str =
-                         "DNS resolution unsuccessful";
+    class NoValidIPFoundException : public NetException {
+        static constexpr std::string_view c_fmt_str =
+                         "Failed to acquire IPv4 address for server {}";
     public:
-        DNSException()
-            : NetException{c_nofmt_str.data()}
+        NoValidIPFoundException(std::string_view _host)
+            : NetException{std::format(c_fmt_str, _host)}
         {}
     };
 
     class InvalidState : public NetException {
         static constexpr std::string_view c_nofmt_str =
-                         "state of singleton is invalid (was queries invoked in correct order?)";
+                         "State of singleton is invalid (was queries invoked in correct order?)";
     public:
         InvalidState()
+            : NetException{c_nofmt_str.data()}
+        {}
+    };
+
+    class LockViolation : public NetException {
+        static constexpr std::string_view c_nofmt_str =
+                         "Lock violation: network call is already running";
+    public:
+        LockViolation()
             : NetException{c_nofmt_str.data()}
         {}
     };

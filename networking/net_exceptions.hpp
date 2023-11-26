@@ -16,7 +16,8 @@ namespace net {
         std::string m_error_msg {};
     public:
         NetException(std::string _error_msg)
-        : m_error_msg{_error_msg} {}
+        : m_error_msg{_error_msg}
+        {}
 
         const char* what() const noexcept override {
             return m_error_msg.data();
@@ -28,7 +29,7 @@ namespace net {
                          "System call returned {} errno";
     public:
         SystemException(int _error)
-            : NetException{std::format(c_fmt_str, _error)}
+        : NetException{std::format(c_fmt_str, _error)}
         {}
     };
 
@@ -37,7 +38,7 @@ namespace net {
                          "Socket returned error {}";
     public:
         SocketException(int _error)
-            : NetException{std::format(c_fmt_str, _error)}
+        : NetException{std::format(c_fmt_str, _error)}
         {}
     };
 
@@ -46,7 +47,7 @@ namespace net {
                          "Failed to acquire IPv4 address for server {}";
     public:
         NoValidIPFoundException(std::string_view _host)
-            : NetException{std::format(c_fmt_str, _host)}
+        : NetException{std::format(c_fmt_str, _host)}
         {}
     };
 
@@ -55,7 +56,7 @@ namespace net {
                          "State of singleton is invalid (was queries invoked in correct order?)";
     public:
         InvalidState()
-            : NetException{c_nofmt_str.data()}
+        : NetException{c_nofmt_str.data()}
         {}
     };
 

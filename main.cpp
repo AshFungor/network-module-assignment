@@ -6,14 +6,17 @@
 int main()
 {
     auto& singleton = net::Networking::get_instance();
-    singleton.invoke_ping();
-    auto state = singleton.get_state();
-    std::cout << "Local state: "
+    std::function<void(void)> callback_for_ping = [&]() {
+        auto state = singleton.get_state();
+        std::cout << "Local state: "
               << ((state == net::NetState::IntDown) ? "Interfaces down" :
               (state == net::NetState::ServerDown)  ? "Server down" :
               (state == net::NetState::Eather)      ? "Ethernet connection" :
                                                       "Wireless connection") << '\n';
-    std::cout << "Local address: " << singleton.get_addr() << '\n';
+        std::cout << "Local address: " << singleton.get_addr() << '\n';
+    };
+    singleton.invoke_ping(&callback_for_ping);
+
 
     std::function<void(void)> callback_for_gl_addr = [&]()
         { std::cout << "Global address: " << singleton.get_global_addr() << '\n'; };
